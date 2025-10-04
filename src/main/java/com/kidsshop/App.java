@@ -1,6 +1,8 @@
 package com.kidsshop;
 
 // Импорт классов для работы с базой данных через JDBC
+import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.sql.*;
 
 // Главный класс приложения
@@ -21,6 +23,9 @@ public class App {
 
             // Вызов метода демонстрации CRUD операций
             demoCRUDOperations(connection);
+
+            // Вызов метода демонстрации операций из файла test-queries.sql
+            executeTestQueriesWithScriptRunner(connection);
 
             // Если все операции прошли без ошибок - подтверждаем транзакцию (коммитим)
             connection.commit();
@@ -479,6 +484,172 @@ public class App {
             if (!rs.next()) {
                 System.out.println("✓ Тестовый товар успешно удален из БД");
             }
+        }
+    }
+
+    private static void executeTestQueriesWithScriptRunner(Connection connection) {
+        System.out.println("\n=== ВЫПОЛНЕНИЕ TEST-QUERIES.SQL (ScriptRunner) ===");
+
+        try {
+            // Создаем ScriptRunner
+            ScriptRunner runner = new ScriptRunner(connection);
+
+            // Настройки
+            runner.setStopOnError(false);    // Продолжать при ошибках
+            runner.setAutoCommit(false);     // Использовать транзакции
+            runner.setSendFullScript(false); // Выполнять по одному запросу
+
+            // Чтение файла из resources
+            InputStream inputStream = App.class.getClassLoader()
+                    .getResourceAsStream("db/test-queries.sql");
+
+            if (inputStream == null) {
+                System.err.println("Файл test-queries.sql не найден в resources/db/");
+                return;
+            }
+
+            InputStreamReader reader = new InputStreamReader(inputStream, StandardCharsets.UTF_8);
+            runner.runScript(reader);
+
+            System.out.println("Все SQL запросы выполнены успешно");
+
+        } catch (Exception e) {
+            System.err.println("Ошибка при выполнении SQL скрипта: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    static class ScriptRunner {
+        private final Connection connection;
+        private boolean stopOnError = false;
+        private boolean autoCommit = false;
+        private boolean sendFullScript = false;
+
+        public ScriptRunner(Connection connection) {
+            this.connection = connection;
+        }
+
+        public void setStopOnError(boolean stopOnError) {
+            this.stopOnError = stopOnError;
+        }
+
+        public void setAutoCommit(boolean autoCommit) {
+            this.autoCommit = autoCommit;
+        }
+
+        public void setSendFullScript(boolean sendFullScript) {
+            this.sendFullScript = sendFullScript;
+        }
+
+        public void runScript(Reader reader) throws SQLException, IOException {
+            try {
+                if (autoCommit) {
+                    connection.setAutoCommit(true);
+                }
+
+                runScript(connection, reader);
+            } finally {
+                if (autoCommit) {
+                    connection.setAutoCommit(false);
+                }
+            }
+        }
+
+        private void runScript(Connection conn, Reader reader) throws IOException, SQLException {
+            StringBuilder command = new StringBuilder();
+            BufferedReader lineReader = new BufferedReader(reader);
+            String line;
+
+            while ((line = lineReader.readLine()) != null) {
+                String trimmedLine = line.trim();
+
+                // Пропускаем комментарии
+                if (trimmedLine.startsWith("--") || trimmedLine.startsWith("//") || trimmedLine.isEmpty()) {
+                    continue;
+                }
+
+                // Пропускаем многострочные комментарии
+                if (trimmedLine.startsWith("/*")) {
+                    while ((line = lineReader.readLine()) != null) {
+                        if (line.trim().endsWith("*/")) break;
+                    }
+                    continue;
+                }
+
+                command.append(line).append("\n");
+
+                // Если строка заканчивается на ;, выполняем команду
+                if (trimmedLine.endsWith(";")) {
+                    executeCommand(conn, command.toString());
+                    command.setLength(0); // Очищаем буфер
+                }
+            }
+
+            // Выполняем оставшуюся команду (если есть)
+            if (command.length() > 0) {
+                executeCommand(conn, command.toString());
+            }
+        }
+
+        private void executeCommand(Connection conn, String command) throws SQLException {
+            String trimmedCommand = command.trim();
+            if (trimmedCommand.isEmpty()) return;
+
+            System.out.println("Выполняется: " +
+                    (trimmedCommand.length() > 50 ? trimmedCommand.substring(0, 47) + "..." : trimmedCommand));
+
+            try (Statement statement = conn.createStatement()) {
+                boolean hasResults = statement.execute(trimmedCommand);
+
+                if (hasResults) {
+                    try (ResultSet rs = statement.getResultSet()) {
+                        printSimpleResultSet(rs);
+                    }
+                } else {
+                    int updateCount = statement.getUpdateCount();
+                    if (updateCount != -1) {
+                        System.out.println("Затронуто строк: " + updateCount);
+                    }
+                }
+            } catch (SQLException e) {
+                if (stopOnError) {
+                    throw e;
+                } else {
+                    System.err.println("Ошибка выполнения SQL: " + e.getMessage());
+                }
+            }
+        }
+
+        private void printSimpleResultSet(ResultSet rs) throws SQLException {
+            ResultSetMetaData metaData = rs.getMetaData();
+            int columnCount = metaData.getColumnCount();
+
+            // Вывод заголовков
+            for (int i = 1; i <= columnCount; i++) {
+                System.out.printf("│ %-15s ", metaData.getColumnName(i));
+            }
+            System.out.println("│");
+
+            // Вывод разделителя
+            for (int i = 1; i <= columnCount; i++) {
+                System.out.printf("├%-17s", "─────────────────");
+            }
+            System.out.println("┤");
+
+            // Вывод данных
+            int rowCount = 0;
+            while (rs.next()) {
+                for (int i = 1; i <= columnCount; i++) {
+                    Object value = rs.getObject(i);
+                    String displayValue = (value == null) ? "NULL" : value.toString();
+                    System.out.printf("│ %-15s ",
+                            displayValue.length() > 15 ? displayValue.substring(0, 12) + "..." : displayValue);
+                }
+                System.out.println("│");
+                rowCount++;
+            }
+
+            System.out.println("Всего строк: " + rowCount);
         }
     }
 }
